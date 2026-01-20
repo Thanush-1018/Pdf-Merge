@@ -26,22 +26,16 @@ MAX_INPUT_FILES = 5
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 60
 
-# In-memory job store
 jobs: Dict[str, Dict[str, Any]] = {}
 
-# In-memory uploaded file store: file_id -> file_path
 uploaded_files: Dict[str, Dict[str, Any]] = {}
 
-# Cache store: cache_key -> output_path
 cache: Dict[str, str] = {}
 
-
-# -------------------- Models --------------------
 
 class JobRequest(BaseModel):
     job_type: str
 
-    # Either give URLs OR file_ids (we support both)
     input_files: Optional[List[HttpUrl]] = None
     input_file_ids: Optional[List[str]] = None
 
@@ -63,14 +57,12 @@ class UploadResponse(BaseModel):
     size_bytes: int
 
 
-# -------------------- Helpers --------------------
 
 def now_ts() -> float:
     return time.time()
 
 
 def make_cache_key(job_type: str, inputs: List[str]) -> str:
-    # Inputs can be URLs or file_ids. We cache based on ordered list.
     raw = job_type.lower().strip() + "|" + "|".join(inputs)
     return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -107,15 +99,10 @@ def download_pdf(url: str, save_path: str):
 
 
 def resolve_inputs_to_local_paths(urls: List[str], file_ids: List[str], job_id: str) -> List[str]:
-    """
-    Returns list of local file paths to merge.
-    - For URLs: download into tmp/
-    - For file_ids: use uploads/ path
-    """
+    
     local_paths = []
     tmp_downloads = []
 
-    # Add uploaded files
     for fid in file_ids:
         if fid not in uploaded_files:
             raise Exception(f"Invalid file_id: {fid}")
@@ -126,7 +113,6 @@ def resolve_inputs_to_local_paths(urls: List[str], file_ids: List[str], job_id: 
 
         local_paths.append(path)
 
-    # Download URL PDFs into tmp
     for i, url in enumerate(urls):
         local_path = os.path.join(TMP_DIR, f"{job_id}_url_{i}.pdf")
         download_pdf(url, local_path)
@@ -150,7 +136,6 @@ def process_merge_job(job_id: str, urls: List[str], file_ids: List[str], cache_k
         jobs[job_id]["progress"] = 50
         jobs[job_id]["updated_at"] = now_ts()
 
-        # Merge PDFs
         writer = PdfWriter()
         for fpath in local_paths:
             reader = PdfReader(fpath)
@@ -177,7 +162,6 @@ def process_merge_job(job_id: str, urls: List[str], file_ids: List[str], cache_k
         cleanup_files(tmp_files)
 
 
-# -------------------- Routes --------------------
 
 @app.get("/")
 def root():
@@ -189,7 +173,6 @@ def root():
 
 @app.post("/upload", response_model=UploadResponse)
 async def upload_pdf(file: UploadFile = File(...)):
-    # Basic validation
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
             status_code=400, detail="Only PDF files are allowed")
@@ -212,10 +195,9 @@ async def upload_pdf(file: UploadFile = File(...)):
                     status_code=400, detail=f"File too large (> {MAX_FILE_SIZE_MB}MB)")
             f.write(chunk)
 
-    # ✅ NEW: Validate PDF after upload (IMPORTANT FIX)
     try:
         test_reader = PdfReader(save_path)
-        _ = len(test_reader.pages)  # force read pages
+        _ = len(test_reader.pages)  
     except Exception as e:
         if os.path.exists(save_path):
             os.remove(save_path)
@@ -257,11 +239,9 @@ def create_job(req: JobRequest, background_tasks: BackgroundTasks):
         raise HTTPException(
             status_code=400, detail=f"Max {MAX_INPUT_FILES} PDFs allowed per job")
 
-    # Cache key based on the exact inputs
     cache_inputs = urls + file_ids
     cache_key = make_cache_key(job_type, cache_inputs)
 
-    # Return cached output if exists
     if cache_key in cache and os.path.exists(cache[cache_key]):
         job_id = str(uuid.uuid4())
         created = now_ts()
